@@ -33,8 +33,47 @@ def get_key_nonblocking():
         except Exception:
             return None
 
+def update_tenet_progress(frames_processed, total_frames, start_time, abort_state, bar_width=50):
+    """Universal TENET-style reverse progress bar."""
+    if not total_frames:
+        return
+        
+    reverse_ratio = 1.0 - (frames_processed / total_frames)
+    percentage = int(reverse_ratio * 100)
+    filled = int(reverse_ratio * bar_width)
+    empty = bar_width - filled
+    bar_str = '█' * filled + '░' * empty
+    
+    elapsed_sec = time.time() - start_time
+    if elapsed_sec > 0.1:
+        speed_fps = frames_processed / elapsed_sec
+    else:
+        speed_fps = 0.0
+        
+    remaining_frames = total_frames - frames_processed
+    if speed_fps > 0:
+        eta_sec = remaining_frames / speed_fps
+    else:
+        eta_sec = 0.0
+        
+    hours = int(eta_sec // 3600)
+    minutes = int((eta_sec % 3600) // 60)
+    seconds = int(eta_sec % 60)
+    
+    if hours > 0:
+        eta_str = f"{hours}h {minutes:02d}m {seconds:02d}s"
+    else:
+        eta_str = f"{minutes:02d}m {seconds:02d}s"
+    
+    if abort_state == 0:
+        progress_line = f"\r{percentage:3d}% - [{bar_str}] | {speed_fps:5.1f} fps | ETA: {eta_str} | [Q=abort]"
+    else:
+        progress_line = f"\r{percentage:3d}% - [{bar_str}] | ⚠️ CONFIRM ABORT (y/n): "
+    
+    sys.stdout.write(progress_line)
+    sys.stdout.flush()
+
 def get_valid_video_file():
-    """File selection menu with option to exit the program."""
     valid_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.webm')
     files = [f for f in os.listdir('.') if f.lower().endswith(valid_extensions)]
     
@@ -63,7 +102,6 @@ def get_valid_video_file():
             print("⚠️ Error: Please enter a valid number.")
 
 def get_transformation_modes():
-    """Video processing modes menu with option to go back."""
     print("\n" + "="*60)
     print(" ⚙️  SELECT VIDEO PROCESSING MODES")
     print("="*60)
@@ -92,7 +130,6 @@ def get_transformation_modes():
             print("⚠️ Error: Enter only digits separated by spaces.")
 
 def get_audio_reversal_mode():
-    """Audio reversal menu with option to go back."""
     print("\n" + "="*60)
     print(" 🔊 AUDIO TRACK SETTINGS")
     print("="*60)
@@ -113,7 +150,6 @@ def get_audio_reversal_mode():
             print("⚠️ Error: Enter 'y', 'n', or '0' to go back.")
 
 def get_color_scale_input():
-    """Color scale input menu with option to go back and strict validation."""
     print("\n" + "="*60)
     print(" 🎨 MULTI-ZONE COLOR SCALE SETTINGS")
     print("="*60)
@@ -180,21 +216,20 @@ def build_color_lut(stops):
     g_lut = np.round(np.interp(x_target, x_points, g_points)).astype(np.uint8)
     b_lut = np.round(np.interp(x_target, x_points, b_points)).astype(np.uint8)
     
-    return np.dstack((b_lut, g_lut, r_lut))[0]
+    return np.column_stack((b_lut, g_lut, r_lut))
 
-def process_audio_ffmpeg(input_video, silent_video, reverse_audio):
+def process_audio_ffmpeg(input_video, silent_video, final_output, reverse_audio):
     """Processes audio using FFmpeg and merges it with the video."""
     if not shutil.which("ffmpeg"):
-        print("\n⚠️ WARNING: FFmpeg not found in system!")
+        print("\n⚠️ CRITICAL WARNING: FFmpeg not found in system!")
         print("   Audio track will not be added. Video saved without sound.")
-        print("   💡 Install FFmpeg for full functionality.")
+        print("   💡 Install FFmpeg and add it to your system PATH for full functionality.")
         return silent_video
 
     temp_wav = "temp_audio_extract.wav"
     temp_rev_wav = "temp_audio_reversed.wav"
-    final_output = silent_video.replace(".mp4", "_WITH_AUDIO.mp4")
 
-    print("🔊 Extracting audio track...")
+    print("🔊 Extracting audio track from original source...")
     res = subprocess.run(["ffmpeg", "-y", "-i", input_video, "-vn", "-acodec", "pcm_s16le", temp_wav], 
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
@@ -211,15 +246,22 @@ def process_audio_ffmpeg(input_video, silent_video, reverse_audio):
         audio_to_mux = temp_rev_wav
 
     print("🔗 Merging processed video and audio...")
-    subprocess.run(["ffmpeg", "-y", "-i", silent_video, "-i", audio_to_mux, 
-                    "-c:v", "copy", "-c:a", "aac", "-strict", "experimental", final_output],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([
+        "ffmpeg", "-y", 
+        "-i", silent_video, 
+        "-i", audio_to_mux, 
+        "-c:v", "copy", 
+        "-c:a", "aac", 
+        "-map", "0:v:0",  
+        "-map", "1:a:0",  
+        final_output
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     
-    # Cleanup temporary files
-    os.remove(silent_video)
+    if os.path.exists(silent_video): os.remove(silent_video)
     if os.path.exists(temp_wav): os.remove(temp_wav)
     if os.path.exists(temp_rev_wav): os.remove(temp_rev_wav)
     
+    print("✅ Audio successfully processed and merged!")
     return final_output
 
 # ==========================================
@@ -227,26 +269,22 @@ def process_audio_ffmpeg(input_video, silent_video, reverse_audio):
 # ==========================================
 
 print("="*60)
-print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v4.0 Global) 🌀 ")
+print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v6.0 Memory-Safe) 🌀 ")
 print("="*60)
 
-while True:  # Main program loop
-    # STEP 1: File selection
+while True:
     input_video = get_valid_video_file()
     
-    while True:  # Settings loop (can be restarted for the same file)
-        # STEP 2: Video modes selection
+    while True:
         modes = get_transformation_modes()
         if modes is None:
-            break  # Go back to file selection
+            break
         
-        # STEP 3: Audio mode selection
         while True:
             reverse_audio = get_audio_reversal_mode()
             if reverse_audio is None:
-                break  # Go back to modes selection
+                break
             
-            # STEP 4: Color settings (if needed)
             color_lut = None
             skip_to_modes = False
             
@@ -255,17 +293,16 @@ while True:  # Main program loop
                     stops = get_color_scale_input()
                     if stops is None:
                         skip_to_modes = True
-                        break  # Go back to audio settings
+                        break
                     
                     print("\n✅ Scale is valid. Generating LUT...")
                     color_lut = build_color_lut(stops)
                     print("✅ Color table successfully merged and ready.")
-                    break  # Success, exit color loop
+                    break
             
             if skip_to_modes:
-                continue  # Restart settings loop (go back to modes)
+                continue
             
-            # STEP 5: Rendering
             suffixes = []
             if modes['time']: suffixes.append("REVERSED")
             if modes['h_flip']: suffixes.append("MIRRORED")
@@ -274,45 +311,68 @@ while True:  # Main program loop
             
             suffix = "_" + "_".join(suffixes) if suffixes else "_PROCESSED"
             name, ext = os.path.splitext(input_video)
-            silent_output = f"{name}{suffix}_SILENT{ext}"
             
-            cap = cv2.VideoCapture(input_video)
+            silent_output = f"{name}{suffix}_SILENT{ext}"
+            final_output = f"{name}{suffix}_WITH_AUDIO{ext}"
+            
+            # ==========================================
+            # MEMORY-SAFE TIME REVERSAL PRE-PROCESSING
+            # ==========================================
+            working_video = input_video
+            temp_reversed_file = None
+            
+            if modes['time']:
+                print("\n⏪ Reversing video timeline via FFmpeg (Memory-Safe Mode)...")
+                print("   (Loading 6500+ frames into RAM would cause OutOfMemory error)")
+                temp_reversed_file = "temp_reversed_source.mp4"
+                
+                # Reverse video on disk, drop audio for now (we handle it separately)
+                subprocess.run([
+                    "ffmpeg", "-y", "-i", input_video, 
+                    "-vf", "reverse", 
+                    "-an", 
+                    "-c:v", "libx264", "-preset", "ultrafast", 
+                    temp_reversed_file
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                if os.path.exists(temp_reversed_file):
+                    working_video = temp_reversed_file
+                    print("✅ Video reversed on disk successfully. Zero RAM used.")
+                else:
+                    print("⚠️ FFmpeg reversal failed. Proceeding with original (may cause OOM).")
+
+            # ==========================================
+            # STREAMING RENDER PIPELINE (NO LISTS!)
+            # ==========================================
+            cap = cv2.VideoCapture(working_video)
             fps = cap.get(cv2.CAP_PROP_FPS)
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            if total_frames <= 0: total_frames = None
-                
+            if total_frames <= 0: 
+                total_frames = None
+            
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(silent_output, fourcc, fps, (width, height))
             
-            print(f"\n⏳ Initializing: {width}x{height}, {fps} FPS")
+            print(f"\n⏳ Initializing streaming render: {width}x{height}, {fps} FPS")
             print(f"🎯 Active modes: {', '.join(suffixes) if suffixes else 'None'}")
             print("💡 Tip: Press 'Q' at any time to request abort.\n")
-            
-            frames_to_process = []
-            while True:
-                ret, frame = cap.read()
-                if not ret: break
-                frames_to_process.append(frame)
-                
-            if modes['time']:
-                frames_to_process = frames_to_process[::-1]
-            cap.release()
-            
-            start_time = time.time()
-            bar_width = 50
-            abort_state = 0
-            
             print("🚀 Starting processing pipeline:")
             
-            for i, frame in enumerate(frames_to_process):
-                key = get_key_nonblocking()
+            start_time = time.time()
+            frame_idx = 0
+            abort_state = 0
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
                 
+                key = get_key_nonblocking()
                 if key == 'q' and abort_state == 0:
                     abort_state = 1
-                
                 if abort_state == 1:
                     if key == 'y':
                         abort_state = 2
@@ -328,30 +388,22 @@ while True:  # Main program loop
                     processed_frame = cv2.flip(processed_frame, 1)
                 if modes['color'] and color_lut is not None:
                     gray = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2GRAY)
-                    processed_frame = cv2.LUT(gray, color_lut)
+                    processed_frame = color_lut[gray]
                 
                 out.write(processed_frame)
+                frame_idx += 1
                 
-                if total_frames:
-                    reverse_ratio = 1.0 - ((i + 1) / total_frames)
-                    percentage = int(reverse_ratio * 100)
-                    filled = int(reverse_ratio * bar_width)
-                    empty = bar_width - filled
-                    bar_str = '█' * filled + '░' * empty
-                    
-                    elapsed = time.time() - start_time
-                    eta = (elapsed / (i + 1)) * (total_frames - (i + 1)) if (i + 1) > 0 else 0
-                    
-                    if abort_state == 0:
-                        progress_line = f"\r{percentage:3d}% - [{bar_str}] | Remaining: {total_frames - (i + 1):5d} frames | [Q=abort]"
-                    else:
-                        progress_line = f"\r{percentage:3d}% - [{bar_str}] | ⚠️ CONFIRM ABORT (y/n): "
-                    
-                    sys.stdout.write(progress_line)
-                    sys.stdout.flush()
+                # Call the universal TENET progress bar
+                update_tenet_progress(frame_idx, total_frames, start_time, abort_state)
             
             print("\n")
+            cap.release()
             out.release()
+            
+            # Cleanup temp reversed video if it was created
+            if temp_reversed_file and os.path.exists(temp_reversed_file):
+                os.remove(temp_reversed_file)
+            
             total_time = time.time() - start_time
             
             if abort_state == 2:
@@ -361,24 +413,22 @@ while True:  # Main program loop
                 print("✅ VIDEO PROCESSING COMPLETED!")
                 print(f"⏱️ Video render time: {total_time:.1f} sec.")
                 
-                # Audio processing
-                final_output = process_audio_ffmpeg(input_video, silent_output, reverse_audio)
+                actual_final_output = process_audio_ffmpeg(input_video, silent_output, final_output, reverse_audio)
                 
                 print("="*60)
                 print("🎉 FULL PROCESSING SUCCESSFULLY COMPLETED!")
-                print(f"💾 Final file: {final_output}")
+                print(f"💾 Final file: {actual_final_output}")
                 print("="*60)
             
-            # Post-render menu
             while True:
                 next_step = input("\n🔄 What's next?\n  [1] Load a new file\n  [2] Different settings for THIS file\n  [0] Exit program\n👉 Your choice: ").strip()
                 if next_step == '0':
                     print("\n👋 Exiting program. See you!")
                     sys.exit()
                 elif next_step == '1':
-                    break  # Go to main loop (file selection)
+                    break
                 elif next_step == '2':
-                    break  # Go to settings loop (modes selection)
+                    break
                 else:
                     print("⚠️ Enter 0, 1, or 2.")
             
