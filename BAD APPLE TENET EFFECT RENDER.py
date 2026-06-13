@@ -8,11 +8,11 @@ import shutil
 import subprocess
 
 # ==========================================
-# УТИЛИТЫ (Вне классов)
+# UTILITIES (Outside of classes)
 # ==========================================
 
 def get_key_nonblocking():
-    """Checks for key press without blocking program execution."""
+    """Checks for a key press without blocking the main program execution."""
     if os.name == 'nt':  # Windows
         import msvcrt
         if msvcrt.kbhit():
@@ -21,24 +21,29 @@ def get_key_nonblocking():
     else:  # Linux / macOS
         import select, termios, tty
         try:
+            # Save current terminal settings
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
+            # Enable raw mode for immediate character reading
             tty.setraw(fd)
             if select.select([sys.stdin], [], [], 0.0)[0]:
                 char = sys.stdin.read(1).lower()
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
                 return char
+            # Restore terminal settings
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             return None
         except Exception:
             return None
 
+
 # ==========================================
-# КЛАСС 1: MENU (Интерфейс и Состояние)
+# CLASS 1: MENU (Interface and State Management)
 # ==========================================
 
 class Menu:
     def __init__(self):
+        """Initializes the menu state machine and default configuration flags."""
         self.current_section_link = self.section_file_select
         self.exit_program = False
         self.render_requested = False
@@ -50,7 +55,7 @@ class Menu:
         self.target_color_stops = None
 
     def validate_file(self):
-        """Проверяет существование выбранного файла. Если его нет, возвращает False."""
+        """Checks if the selected file still exists. Returns False if missing."""
         if not self.selected_file or not os.path.exists(self.selected_file):
             print("\n" + "="*60)
             print(" ⚠️ CRITICAL ERROR: FILE NOT FOUND ")
@@ -61,17 +66,17 @@ class Menu:
         return True
 
     def choose_menu_point(self):
-        """Главная точка входа для ProcessManager."""
+        """Main entry point for ProcessManager. Executes current section and updates state."""
         next_section = self.current_section_link()
         if next_section is not None:
             self.current_section_link = next_section
         return next_section
 
     def section_file_select(self):
-        """Секция выбора файла с безопасным обновлением списка (без рекурсии)."""
-        while True:  # Этот цикл гарантирует отсутствие рекурсии!
+        """File selection menu with safe, non-recursive directory refreshing."""
+        while True:  # Iterative loop prevents stack overflow on refresh
             valid_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.webm')
-            # Переменная files ПЕРЕЗАПИСЫВАЕТСЯ каждый раз при входе в цикл или после 'continue'
+            # Re-scan directory on every loop iteration
             files = [f for f in os.listdir('.') if f.lower().endswith(valid_extensions)]
             
             if not files:
@@ -79,15 +84,14 @@ class Menu:
                 print(" ⚠️ WARNING: No video files found in the directory! ")
                 print(" Please add a video file, then press Enter to refresh...")
                 input("="*60)
-                continue  # Перезапускаем цикл, переменные перетираются, стек не растет
-
+                continue  # Restart loop, overwriting variables safely
+            
             print("\n" + "="*60)
             print(" 📁 SELECT SOURCE FILE")
             print("="*60)
             for i, f in enumerate(files, 1):
                 print(f"  [{i}] {f}")
             
-            # Добавляем опцию Refresh
             print("  [r] 🔄 REFRESH FILE LIST (Update directory state)")
             print("  [0] 🚪 EXIT PROGRAM")
             
@@ -96,30 +100,22 @@ class Menu:
             if choice == '0':
                 self.exit_program = True
                 return None
-            
-            # ВОТ ОНО: Магия без рекурсии!
             elif choice == 'r':
-                # Оператор continue мгновенно перебрасывает нас в начало while True.
-                # Список files будет получен заново через os.listdir.
-                # Глубина стека вызовов не увеличивается ни на 1.
-                continue 
-            
+                continue  # Instantly restart loop to re-read directory
             else:
                 try:
                     idx = int(choice) - 1
                     if 0 <= idx < len(files):
                         self.selected_file = files[idx]
-                        # Переход к следующему состоянию меню (не рекурсия, а смена ссылки)
-                        return self.section_modes 
+                        return self.section_modes  # Transition to next state
                     print("⚠️ Error: Number out of range.")
                 except ValueError:
                     print("⚠️ Error: Please enter a valid number or 'r'.")
 
     def section_modes(self):
-        """Секция выбора режимов видео."""
-        # ПРОВЕРКА БЕЗОПАСНОСТИ
+        """Video processing modes selection menu."""
         if not self.validate_file():
-            return self.section_file_select
+            return self.section_file_select  # Fallback if file disappeared
 
         print("\n" + "="*60)
         print(" ⚙️  SELECT VIDEO PROCESSING MODES")
@@ -151,8 +147,7 @@ class Menu:
                 print("⚠️ Error: Enter only digits separated by spaces.")
 
     def section_audio(self):
-        """Секция настройки аудио."""
-        # ПРОВЕРКА БЕЗОПАСНОСТИ
+        """Audio track reversal settings menu."""
         if not self.validate_file():
             return self.section_file_select
 
@@ -178,7 +173,7 @@ class Menu:
                 print("⚠️ Error: Enter 'y', 'n', or '0' to go back.")
 
     def _get_single_scale(self, prompt_title, prompt_example):
-        """Универсальная функция для ввода одной цветовой шкалы."""
+        """Universal helper to parse and validate a single multi-zone color scale."""
         print("\n" + "="*60)
         print(f" 🎨 {prompt_title}")
         print("="*60)
@@ -215,6 +210,7 @@ class Menu:
                 print("  💡 Tip: Do not put spaces inside parentheses.\n")
                 continue
                 
+            # Logical validation rules
             if parsed_stops[0][0] != 0:
                 errors.append("First number (percent) must always be 0.")
             if parsed_stops[-1][0] != 100:
@@ -234,12 +230,11 @@ class Menu:
                 return parsed_stops
 
     def section_color(self):
-        """Секция ввода ДВУХ цветовых шкал (Source → Target)."""
-        # ПРОВЕРКА БЕЗОПАСНОСТИ
+        """Menu for inputting BOTH source and target color scales."""
         if not self.validate_file():
             return self.section_file_select
 
-        # ШАГ 1: Исходная шкала
+        # Step 1: Get source scale
         source_stops = self._get_single_scale(
             "SOURCE COLOR SCALE (What to replace)",
             "0(255,0,0) 100(0,0,255)"
@@ -247,7 +242,7 @@ class Menu:
         if source_stops is None:
             return self.section_audio
         
-        # ШАГ 2: Целевая шкала
+        # Step 2: Get target scale
         target_stops = self._get_single_scale(
             "TARGET COLOR SCALE (What to replace with)",
             "0(0,0,0) 100(255,255,255)"
@@ -262,12 +257,12 @@ class Menu:
         return self._request_render()
 
     def _request_render(self):
-        """Вспомогательный метод для сигнализации о готовности к рендеру."""
+        """Helper method to signal the ProcessManager that rendering can begin."""
         self.render_requested = True
         return None
 
     def post_render_menu(self):
-        """Меню после завершения рендера."""
+        """Menu displayed after a render completes or is aborted."""
         print("\n" + "="*60)
         print(" 🔄 POST-RENDER ACTIONS")
         print("="*60)
@@ -287,21 +282,25 @@ class Menu:
 
 
 # ==========================================
-# КЛАСС 2: RENDER (Чистый бэкенд и Отрисовка)
+# CLASS 2: RENDER (Pure Backend and Drawing)
 # ==========================================
 
 class Render:
     def __init__(self):
+        """Initializes rendering state variables."""
         self.abort_state = 0
 
     def taskbar(self, current, total, start_time, abort_state, bar_width=50):
-        """Универсальная TENET-полоса загрузки."""
+        """Draws the universal TENET-style reverse progress bar."""
         if not total: return
+        
+        # Calculate reverse ratio (100% at start, 0% at end)
         reverse_ratio = 1.0 - (current / total)
         percentage = int(reverse_ratio * 100)
         filled = int(reverse_ratio * bar_width)
         bar_str = '█' * filled + '░' * (bar_width - filled)
         
+        # Calculate speed and ETA
         elapsed = time.time() - start_time
         speed = current / elapsed if elapsed > 0.1 else 0.0
         eta = (total - current) / speed if speed > 0 else 0
@@ -310,6 +309,7 @@ class Render:
         m, s = divmod(rem, 60)
         eta_str = f"{h}h {m:02d}m {s:02d}s" if h > 0 else f"{m:02d}m {s:02d}s"
         
+        # Format output string based on abort state
         if abort_state == 0:
             line = f"\r{percentage:3d}% - [{bar_str}] | {speed:5.1f} fps | ETA: {eta_str} | [Q=abort]"
         else:
@@ -319,12 +319,12 @@ class Render:
         sys.stdout.flush()
 
     def apply_mirror(self, frame):
-        """Режим: Зеркало."""
+        """Applies horizontal mirroring to the frame."""
         return cv2.flip(frame, 1)
 
     def apply_color_mapping(self, frame, source_stops, target_stops):
-        """Режим: Цветовой градиентный маппинг с автоматическим выравниванием зон."""
-        # 1. Выравниваем целевую шкалу под проценты исходной
+        """Maps pixel colors from source gradient zones to target gradient zones."""
+        # 1. Align target scale percentages to match the source scale
         source_pcts = [stop[0] for stop in source_stops]
         target_pcts = [stop[0] for stop in target_stops]
         
@@ -332,6 +332,7 @@ class Render:
         target_g = [stop[2] for stop in target_stops]
         target_b = [stop[3] for stop in target_stops]
         
+        # Interpolate target colors to match source percentage points
         aligned_r = np.interp(source_pcts, target_pcts, target_r)
         aligned_g = np.interp(source_pcts, target_pcts, target_g)
         aligned_b = np.interp(source_pcts, target_pcts, target_b)
@@ -341,7 +342,7 @@ class Render:
             for i in range(len(source_stops))
         ]
         
-        # 2. Применяем маппинг
+        # 2. Apply vector projection mapping
         result = frame.copy().astype(np.float32)
         
         for i in range(len(source_stops) - 1):
@@ -355,12 +356,14 @@ class Render:
             direction_length_sq = np.sum(src_direction * src_direction)
             
             if direction_length_sq < 1e-6:
-                continue
+                continue  # Skip if points are identical
             
+            # Project pixel colors onto the source direction vector
             pixel_vector = frame.astype(np.float32) - src_start
             dot_product = np.sum(pixel_vector * src_direction, axis=2)
             t = np.clip(dot_product / direction_length_sq, 0, 1)
             
+            # Interpolate target color based on projection ratio 't'
             interpolated_color = tgt_start + t[:, :, np.newaxis] * (tgt_end - tgt_start)
             mask = (t > 0) & (t < 1)
             result[mask] = interpolated_color[mask]
@@ -368,7 +371,7 @@ class Render:
         return np.clip(result, 0, 255).astype(np.uint8)
 
     def process_audio_ffmpeg(self, input_video, silent_video, final_output, reverse_audio):
-        """Обработка аудио через FFmpeg."""
+        """Extracts, optionally reverses, and merges audio using FFmpeg."""
         if not shutil.which("ffmpeg"):
             print("\n⚠️ CRITICAL WARNING: FFmpeg not found in system!")
             print("   Audio track will not be added. Video saved without sound.")
@@ -399,6 +402,7 @@ class Render:
             "-c:v", "copy", "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", final_output
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
+        # Cleanup temporary files
         if os.path.exists(silent_video): os.remove(silent_video)
         if os.path.exists(temp_wav): os.remove(temp_wav)
         if os.path.exists(temp_rev_wav): os.remove(temp_rev_wav)
@@ -407,8 +411,8 @@ class Render:
         return final_output
 
     def run_pipeline(self, input_video, modes, reverse_audio, source_stops, target_stops):
-        """Главный конвейер рендера."""
-        # ФИНАЛЬНАЯ ПРОВЕРКА БЕЗОПАСНОСТИ ПЕРЕД ЗАПУСКОМ
+        """Main streaming render pipeline. Executes selected modes frame-by-frame."""
+        # Final safety check right before processing
         if not os.path.exists(input_video):
             print("\n" + "="*60)
             print(" ⚠️ CRITICAL ERROR: FILE DISAPPEARED DURING SETUP ")
@@ -417,6 +421,7 @@ class Render:
             print(" Aborting render and returning to file selection.\n")
             return "FILE_MISSING"
 
+        # Generate output filenames
         suffixes = []
         if modes['time']: suffixes.append("REVERSED")
         if modes['h_flip']: suffixes.append("MIRRORED")
@@ -432,6 +437,7 @@ class Render:
         working_video = input_video
         temp_reversed_file = None
         
+        # Pre-process: Reverse video on disk if requested (Memory-Safe)
         if modes['time']:
             print("\n⏪ Reversing video timeline via FFmpeg (Memory-Safe Mode)...")
             temp_reversed_file = "temp_reversed_source.mp4"
@@ -444,6 +450,7 @@ class Render:
                 working_video = temp_reversed_file
                 print("✅ Video reversed on disk successfully. Zero RAM used.")
 
+        # Initialize VideoCapture and VideoWriter
         cap = cv2.VideoCapture(working_video)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -461,10 +468,12 @@ class Render:
         frame_idx = 0
         self.abort_state = 0
         
+        # Main streaming loop
         while True:
             ret, frame = cap.read()
             if not ret: break
             
+            # Non-blocking abort check
             key = get_key_nonblocking()
             if key == 'q' and self.abort_state == 0: self.abort_state = 1
             if self.abort_state == 1:
@@ -476,6 +485,7 @@ class Render:
             
             processed_frame = frame.copy()
             
+            # Apply selected rendering modes
             if modes['h_flip']:
                 processed_frame = self.apply_mirror(processed_frame)
             if modes['color'] and source_stops and target_stops:
@@ -484,11 +494,14 @@ class Render:
             out.write(processed_frame)
             frame_idx += 1
             
+            # Update progress bar
             self.taskbar(frame_idx, total_frames, start_time, self.abort_state)
         
         print("\n")
         cap.release()
         out.release()
+        
+        # Cleanup temporary reversed video file
         if temp_reversed_file and os.path.exists(temp_reversed_file): os.remove(temp_reversed_file)
         
         if self.abort_state == 2:
@@ -504,26 +517,30 @@ class Render:
 
 
 # ==========================================
-# КЛАСС 3: PROCESS MANAGER (Дирижер)
+# CLASS 3: PROCESS MANAGER (Orchestrator)
 # ==========================================
 
 class ProcessManager:
     def __init__(self):
+        """Initializes Menu and Render objects, and runs the main control loop."""
         print("="*60)
-        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v8.0 Bulletproof) 🌀 ")
+        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v8.1 Global Final) 🌀 ")
         print("="*60)
         
         self.menu = Menu()
         self.render = Render()
         
         while True:
+            # Condition 1: Run menu until render is requested or exit is triggered
             while not self.menu.render_requested and not self.menu.exit_program:
                 self.menu.choose_menu_point()
                 
+            # Condition 2: Safe global exit check
             if self.menu.exit_program:
                 print("\n👋 Exiting program. See you!")
                 break
                 
+            # Condition 1 (continued): Execute render if requested
             if self.menu.render_requested:
                 result = self.render.run_pipeline(
                     self.menu.selected_file,
@@ -533,17 +550,19 @@ class ProcessManager:
                     self.menu.target_color_stops
                 )
                 
-                # Обработка случая, когда файл исчез прямо перед рендером
+                # Handle edge case where file vanished right before render started
                 if result == "FILE_MISSING":
                     self.menu.current_section_link = self.menu.section_file_select
                     self.menu.render_requested = False
                     continue
                 
+                # Reset flag and show post-render options
                 self.menu.render_requested = False
                 self.menu.post_render_menu()
 
 # ==========================================
-# ТОЧКА ВХОДА
+# ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
+    # Instantiating ProcessManager automatically triggers __init__ and starts the app
     ProcessManager()
