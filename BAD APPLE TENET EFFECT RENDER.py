@@ -15,6 +15,7 @@ def get_key_nonblocking():
     """Checks for a key press without blocking the main program execution."""
     if os.name == 'nt':  # Windows
         import msvcrt
+        # Check if a key has been pressed
         if msvcrt.kbhit():
             return msvcrt.getch().decode('utf-8', errors='ignore').lower()
         return None
@@ -26,6 +27,7 @@ def get_key_nonblocking():
             old_settings = termios.tcgetattr(fd)
             # Enable raw mode for immediate character reading
             tty.setraw(fd)
+            # Check if input is available
             if select.select([sys.stdin], [], [], 0.0)[0]:
                 char = sys.stdin.read(1).lower()
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -74,17 +76,18 @@ class Menu:
 
     def section_file_select(self):
         """File selection menu with safe, non-recursive directory refreshing."""
-        while True:  # Iterative loop prevents stack overflow on refresh
+        while True:
             valid_extensions = ('.mp4', '.avi', '.mkv', '.mov', '.webm')
-            # Re-scan directory on every loop iteration
+            # Re-scan directory on every loop iteration to prevent stale data
             files = [f for f in os.listdir('.') if f.lower().endswith(valid_extensions)]
             
+            # Handle empty directory gracefully
             if not files:
                 print("\n" + "="*60)
                 print(" ⚠️ WARNING: No video files found in the directory! ")
                 print(" Please add a video file, then press Enter to refresh...")
                 input("="*60)
-                continue  # Restart loop, overwriting variables safely
+                continue
             
             print("\n" + "="*60)
             print(" 📁 SELECT SOURCE FILE")
@@ -96,7 +99,13 @@ class Menu:
             print("  [0] 🚪 EXIT PROGRAM")
             
             choice = input("\n👉 Enter file number, 'r' to refresh, or 0 to exit: ").strip().lower()
+            parts = choice.split()
             
+            # STRICT VALIDATION: Prevent mixing '0' or 'r' with file selections
+            if len(parts) > 1 and ('0' in parts or 'r' in parts):
+                print("⚠️ Error: Cannot mix '0' or 'r' with file number selections.")
+                continue
+                
             if choice == '0':
                 self.exit_program = True
                 return None
@@ -127,11 +136,23 @@ class Menu:
         
         while True:
             choice = input("\n👉 Enter mode numbers separated by space (or 0 to go back): ").strip()
+            parts = choice.split()
+            
+            # STRICT VALIDATION: Prevent mixing '0' (go back) with actual mode selections
+            if '0' in parts and len(parts) > 1:
+                print("⚠️ Error: Cannot mix '0' (go back) with other mode selections.")
+                continue
+            
+            # WARNING: Detect duplicate menu selections
+            if len(parts) > 1 and len(parts) != len(set(parts)):
+                print("⚠️ Warning: Duplicate menu selections detected. Proceeding with unique choices.")
+                
             if choice == '0':
                 return self.section_file_select
             
             try:
-                modes = [int(x) for x in choice.split()]
+                # Use set() to automatically deduplicate valid choices
+                modes = list(set(int(x) for x in parts))
                 if all(0 <= m <= 3 for m in modes):
                     if 0 in modes:
                         self.modes = {'time': False, 'h_flip': False, 'color': False}
@@ -161,6 +182,13 @@ class Menu:
         
         while True:
             choice = input("\n👉 Your choice (y/n/0): ").strip().lower()
+            parts = choice.split()
+            
+            # STRICT VALIDATION: Prevent mixing '0'/'back' with 'y'/'n'
+            if len(parts) > 1 and ('0' in parts or 'back' in parts):
+                print("⚠️ Error: Cannot mix '0' or 'back' with other choices.")
+                continue
+                
             if choice in ['0', 'back']:
                 return self.section_modes
             elif choice in ['y', 'yes']:
@@ -185,12 +213,17 @@ class Menu:
         
         while True:
             user_input = input("\n👉 Enter scale: ").strip().lower()
+            parts = user_input.split()
             
+            # STRICT VALIDATION: Prevent mixing '0'/'back' with actual scale data
+            if len(parts) > 1 and ('0' in parts or 'back' in parts):
+                print("⚠️ Error: Cannot mix '0' or 'back' with scale definitions.")
+                continue
+                
             if user_input in ['0', 'back']:
                 return None
                 
             errors = []
-            parts = user_input.split()
             
             if not parts:
                 print("⚠️ Error: Input cannot be empty.")
@@ -210,7 +243,7 @@ class Menu:
                 print("  💡 Tip: Do not put spaces inside parentheses.\n")
                 continue
                 
-            # Logical validation rules
+            # Logical validation rules for color scales
             if parsed_stops[0][0] != 0:
                 errors.append("First number (percent) must always be 0.")
             if parsed_stops[-1][0] != 100:
@@ -268,6 +301,17 @@ class Menu:
         print("="*60)
         while True:
             choice = input("\n🔄 What's next?\n  [1] Load a new file\n  [2] Different settings for THIS file\n  [0] Exit program\n👉 Your choice: ").strip()
+            parts = choice.split()
+            
+            # STRICT VALIDATION: Prevent mixing '0' (exit) with '1' or '2'
+            if len(parts) > 1 and '0' in parts:
+                print("⚠️ Error: Cannot mix '0' (exit) with other action choices.")
+                continue
+            
+            # WARNING: Detect duplicate menu selections
+            if len(parts) > 1 and len(parts) != len(set(parts)):
+                print("⚠️ Warning: Duplicate menu selections detected. Proceeding with unique choices.")
+                
             if choice == '0':
                 self.exit_program = True
                 break
@@ -290,18 +334,24 @@ class Render:
         """Initializes rendering state variables."""
         self.abort_state = 0
 
-    def taskbar(self, current, total, start_time, abort_state, bar_width=50, reverse=True):
-        """Draws the universal progress bar (supports both TENET reverse and standard forward)."""
+    def print_pipeline_header(self, suffixes):
+        """Prints the standard, identical header before any progress bar."""
+        modes_str = ", ".join(suffixes) if suffixes else "None"
+        print(f"🎯 Active modes: {modes_str}")
+        print("💡 Tip: Press 'Q' at any time to request abort.")
+        print("🚀 Starting pipeline:")
+
+    def taskbar(self, current, total, start_time, abort_state, bar_width=50):
+        """
+        Draws the universal TENET-style reverse progress bar.
+        ALWAYS right-to-left, decreasing percentage, with stats, ETA, and abort prompt.
+        """
         if not total: return
         
-        # Calculate ratio based on direction
-        if reverse:
-            ratio = 1.0 - (current / total)  # TENET style: 100% at start, 0% at end
-        else:
-            ratio = current / total          # Standard style: 0% at start, 100% at end
-            
-        percentage = int(ratio * 100)
-        filled = int(ratio * bar_width)
+        # TENET style: 100% at start, 0% at end, filling from right to left
+        reverse_ratio = 1.0 - (current / total)
+        percentage = int(reverse_ratio * 100)
+        filled = int(reverse_ratio * bar_width)
         bar_str = '█' * filled + '░' * (bar_width - filled)
         
         # Calculate speed and ETA
@@ -395,7 +445,7 @@ class Render:
 
         audio_to_mux = temp_wav
         if reverse_audio:
-            print("⏪ Reversing audio...")
+            print("⏪ Reversing audio track...")
             subprocess.run(["ffmpeg", "-y", "-i", temp_wav, "-af", "areverse", temp_rev_wav],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             audio_to_mux = temp_rev_wav
@@ -441,7 +491,7 @@ class Render:
         working_video = input_video
         temp_reversed_file = None
         
-        # Pre-process: Reverse video on disk if requested (Memory-Safe with Progress Bar)
+        # Pre-process: Reverse video on disk if requested (Memory-Safe with TENET Progress Bar)
         if modes['time']:
             print("\n⏪ Reversing video timeline via FFmpeg (Memory-Safe Mode)...")
             temp_reversed_file = "temp_reversed_source.mp4"
@@ -457,6 +507,9 @@ class Render:
                 "-c:v", "libx264", "-preset", "ultrafast", temp_reversed_file
             ]
             
+            # Print the IDENTICAL header before the FFmpeg progress bar
+            self.print_pipeline_header(suffixes)
+            
             # Run FFmpeg and capture stderr for real-time progress tracking
             process = subprocess.Popen(
                 cmd, 
@@ -469,28 +522,47 @@ class Render:
             
             start_time = time.time()
             current_frame = 0
+            ffmpeg_abort_state = 0
             
             # Read stderr line by line to parse frame count
             while True:
+                # Non-blocking abort check for FFmpeg process
+                key = get_key_nonblocking()
+                if key == 'q' and ffmpeg_abort_state == 0:
+                    ffmpeg_abort_state = 1
+                
+                if ffmpeg_abort_state == 1:
+                    if key == 'y':
+                        process.terminate()
+                        ffmpeg_abort_state = 2
+                        break
+                    elif key == 'n':
+                        ffmpeg_abort_state = 0
+                
                 line = process.stderr.readline()
                 if not line:
                     if process.poll() is not None:
                         break
                     continue
                 
-                # Parse frame number from FFmpeg output (e.g., "frame=  123")
+                # Parse frame number from FFmpeg output
                 match = re.search(r'frame=\s*(\d+)', line)
                 if match:
                     current_frame = int(match.group(1))
-                    # Use standard forward progress bar for FFmpeg
-                    self.taskbar(current_frame, total_rev_frames, start_time, 0, bar_width=50, reverse=False)
+                    # Use the EXACT SAME taskbar function (TENET style)
+                    self.taskbar(current_frame, total_rev_frames, start_time, ffmpeg_abort_state)
             
-            # Ensure the progress bar reaches 100% upon completion
-            if total_rev_frames > 0:
-                self.taskbar(total_rev_frames, total_rev_frames, start_time, 0, bar_width=50, reverse=False)
+            # Ensure the progress bar reaches 100% upon successful completion
+            if ffmpeg_abort_state != 2 and total_rev_frames > 0:
+                self.taskbar(total_rev_frames, total_rev_frames, start_time, 0)
             print("\n") # Newline after progress bar
             
-            process.wait() # Ensure process is fully finished
+            if ffmpeg_abort_state == 2:
+                print("⚠️ FFMPEG REVERSAL ABORTED BY USER.")
+                # Cleanup partial file if it exists
+                if os.path.exists(temp_reversed_file):
+                    os.remove(temp_reversed_file)
+                return "ABORTED"
             
             if os.path.exists(temp_reversed_file):
                 working_video = temp_reversed_file
@@ -498,7 +570,7 @@ class Render:
             else:
                 print("⚠️ FFmpeg reversal failed. Proceeding with original.")
 
-        # Initialize VideoCapture and VideoWriter
+        # Initialize VideoCapture and VideoWriter for main render
         cap = cv2.VideoCapture(working_video)
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -509,8 +581,8 @@ class Render:
         out = cv2.VideoWriter(silent_output, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
         
         print(f"\n⏳ Initializing streaming render: {width}x{height}, {fps} FPS")
-        print(f"🎯 Active modes: {', '.join(suffixes) if suffixes else 'None'}")
-        print("💡 Tip: Press 'Q' at any time to request abort.\n🚀 Starting pipeline:")
+        # Print the IDENTICAL header before the main render progress bar
+        self.print_pipeline_header(suffixes)
         
         start_time = time.time()
         frame_idx = 0
@@ -542,7 +614,7 @@ class Render:
             out.write(processed_frame)
             frame_idx += 1
             
-            # Update TENET-style reverse progress bar
+            # Update TENET-style REVERSE progress bar for main rendering
             self.taskbar(frame_idx, total_frames, start_time, self.abort_state)
         
         print("\n")
@@ -552,8 +624,9 @@ class Render:
         # Cleanup temporary reversed video file
         if temp_reversed_file and os.path.exists(temp_reversed_file): os.remove(temp_reversed_file)
         
-        if self.abort_state == 2:
+        if self.abort_state == 2 or 'ffmpeg_abort_state' in locals() and ffmpeg_abort_state == 2:
             print("⚠️ VIDEO RENDER ABORTED BY USER.")
+            return "ABORTED"
         else:
             print("✅ VIDEO PROCESSING COMPLETED!")
             self.process_audio_ffmpeg(input_video, silent_output, final_output, reverse_audio)
@@ -572,7 +645,7 @@ class ProcessManager:
     def __init__(self):
         """Initializes Menu and Render objects, and runs the main control loop."""
         print("="*60)
-        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v8.2 FFmpeg Progress) 🌀 ")
+        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v11.0 Final Polish) 🌀 ")
         print("="*60)
         
         self.menu = Menu()
@@ -598,8 +671,8 @@ class ProcessManager:
                     self.menu.target_color_stops
                 )
                 
-                # Handle edge case where file vanished right before render started
-                if result == "FILE_MISSING":
+                # Handle edge cases: file vanished or user aborted
+                if result in ["FILE_MISSING", "ABORTED"]:
                     self.menu.current_section_link = self.menu.section_file_select
                     self.menu.render_requested = False
                     continue
