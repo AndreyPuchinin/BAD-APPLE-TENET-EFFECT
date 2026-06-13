@@ -290,14 +290,18 @@ class Render:
         """Initializes rendering state variables."""
         self.abort_state = 0
 
-    def taskbar(self, current, total, start_time, abort_state, bar_width=50):
-        """Draws the universal TENET-style reverse progress bar."""
+    def taskbar(self, current, total, start_time, abort_state, bar_width=50, reverse=True):
+        """Draws the universal progress bar (supports both TENET reverse and standard forward)."""
         if not total: return
         
-        # Calculate reverse ratio (100% at start, 0% at end)
-        reverse_ratio = 1.0 - (current / total)
-        percentage = int(reverse_ratio * 100)
-        filled = int(reverse_ratio * bar_width)
+        # Calculate ratio based on direction
+        if reverse:
+            ratio = 1.0 - (current / total)  # TENET style: 100% at start, 0% at end
+        else:
+            ratio = current / total          # Standard style: 0% at start, 100% at end
+            
+        percentage = int(ratio * 100)
+        filled = int(ratio * bar_width)
         bar_str = '█' * filled + '░' * (bar_width - filled)
         
         # Calculate speed and ETA
@@ -437,18 +441,62 @@ class Render:
         working_video = input_video
         temp_reversed_file = None
         
-        # Pre-process: Reverse video on disk if requested (Memory-Safe)
+        # Pre-process: Reverse video on disk if requested (Memory-Safe with Progress Bar)
         if modes['time']:
             print("\n⏪ Reversing video timeline via FFmpeg (Memory-Safe Mode)...")
             temp_reversed_file = "temp_reversed_source.mp4"
-            subprocess.run([
+            
+            # Probe total frames for accurate progress calculation
+            cap_probe = cv2.VideoCapture(input_video)
+            total_rev_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap_probe.release()
+            
+            # Build FFmpeg command
+            cmd = [
                 "ffmpeg", "-y", "-i", input_video, "-vf", "reverse", "-an", 
                 "-c:v", "libx264", "-preset", "ultrafast", temp_reversed_file
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ]
+            
+            # Run FFmpeg and capture stderr for real-time progress tracking
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.PIPE, 
+                text=True, 
+                encoding='utf-8', 
+                errors='ignore'
+            )
+            
+            start_time = time.time()
+            current_frame = 0
+            
+            # Read stderr line by line to parse frame count
+            while True:
+                line = process.stderr.readline()
+                if not line:
+                    if process.poll() is not None:
+                        break
+                    continue
+                
+                # Parse frame number from FFmpeg output (e.g., "frame=  123")
+                match = re.search(r'frame=\s*(\d+)', line)
+                if match:
+                    current_frame = int(match.group(1))
+                    # Use standard forward progress bar for FFmpeg
+                    self.taskbar(current_frame, total_rev_frames, start_time, 0, bar_width=50, reverse=False)
+            
+            # Ensure the progress bar reaches 100% upon completion
+            if total_rev_frames > 0:
+                self.taskbar(total_rev_frames, total_rev_frames, start_time, 0, bar_width=50, reverse=False)
+            print("\n") # Newline after progress bar
+            
+            process.wait() # Ensure process is fully finished
             
             if os.path.exists(temp_reversed_file):
                 working_video = temp_reversed_file
                 print("✅ Video reversed on disk successfully. Zero RAM used.")
+            else:
+                print("⚠️ FFmpeg reversal failed. Proceeding with original.")
 
         # Initialize VideoCapture and VideoWriter
         cap = cv2.VideoCapture(working_video)
@@ -494,7 +542,7 @@ class Render:
             out.write(processed_frame)
             frame_idx += 1
             
-            # Update progress bar
+            # Update TENET-style reverse progress bar
             self.taskbar(frame_idx, total_frames, start_time, self.abort_state)
         
         print("\n")
@@ -524,7 +572,7 @@ class ProcessManager:
     def __init__(self):
         """Initializes Menu and Render objects, and runs the main control loop."""
         print("="*60)
-        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v8.1 Global Final) 🌀 ")
+        print(" 🌀 UNIVERSAL TENET VIDEO CONSTRUCTOR (v8.2 FFmpeg Progress) 🌀 ")
         print("="*60)
         
         self.menu = Menu()
